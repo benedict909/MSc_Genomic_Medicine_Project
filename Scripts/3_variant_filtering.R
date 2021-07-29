@@ -11,6 +11,8 @@ load2object <- function (filename) {
   NULL
 }
 
+resdir = "~/../Dropbox/Masters/9_Research_Project/Report/Figures";  if(!dir.exists(resdir))dir.create(resdir)
+plot_figs = c(T,F)[1]
 
 # Load vcf_combined
 vcf_dir = "~/Masters_research_project/VCF_files"
@@ -49,6 +51,14 @@ save(vcf_annotated, file = file.path("~/../Dropbox/Masters/9_Research_Project/Da
 
 # 2. variant filtering ----
 
+prefilt_count = vcf_annotated %>% 
+  filter(Tissue!="Blood", FILTER == "PASS", !is.na(ALT)) %>% 
+  mutate(Tissue = ifelse(Sample=="CIRCB35a_PLASMA","Plasma_a",Tissue),
+         Tissue = ifelse(Sample=="CIRCB35b_PLASMA","Plasma_b",Tissue)) %>% 
+  count(Patient, Timepoint, Tissue, name = "Initial count") %>% 
+  arrange(Patient, Tissue, Timepoint)
+prefilt_count
+
 # germline variants
 vcf_blood = vcf_annotated %>% 
   filter(Tissue == "Blood" & FILTER == "PASS") 
@@ -59,45 +69,102 @@ blood_IDS = vcf_blood$Sample_ID
 vcf_somatic = vcf_annotated %>% 
   filter(FILTER == "PASS" & Tissue != "Blood" & !Sample_ID %in% blood_IDS)
 
-vcf_somatic %>% # no. of filtered somatic variants per sample 
-  count(Sample, Timepoint, Patient) %>% 
-  arrange(Patient, Timepoint, n)
+somatic_count1 = vcf_somatic %>% # no. of filtered somatic variants per sample 
+  mutate(Tissue = ifelse(Sample=="CIRCB35a_PLASMA","Plasma_a",Tissue),
+         Tissue = ifelse(Sample=="CIRCB35b_PLASMA","Plasma_b",Tissue)) %>%
+  count(Patient, Timepoint, Tissue, name = "Filtered count") %>% 
+  arrange(Patient, Tissue, Timepoint)
+somatic_count1
 
 # add back in LowSupport variants seen in other samples of the same patient
 somatic_IDs = vcf_somatic$Sample_ID 
 
-vcf_annotated %>% 
-  filter(FILTER == "LowSupport" & Tissue != "Blood" & 
-           Sample_ID %in% somatic_IDs,
-         alt_DP < 30) %>% 
+if(plot_figs) png(file.path(resdir,"low_support_alt_DP.png"), width = 2000,height = 800,res = 350)
+plot1 = vcf_annotated %>% 
+  filter(FILTER == "LowSupport" & Tissue != "Blood" & Sample_ID %in% somatic_IDs) %>% 
+  mutate(meanval = mean(alt_DP), medval = median(alt_DP)) %>% 
   ggplot(aes(x = alt_DP)) +
-    geom_bar(stat = "count") + 
-    theme_bw() +  scale_x_continuous(minor_breaks = c(seq(0,30,1)), breaks = c(seq(0,30,5))) + 
-    labs(y = "Count", x = "Alteration depth", title = "Alteration depth of `LowSupport` variants in plasma/urine")
+    geom_bar(stat = "count", fill = "midnightblue") + 
+  geom_vline(aes(xintercept = meanval), colour = "red", linetype = "dashed") + 
+  geom_vline(aes(xintercept = medval), colour = "limegreen", linetype = "dashed") + 
+    theme_bw() +  
+    scale_x_continuous(limits = c(0,101),expand = c(0,0), breaks = seq(0,100,10)) + 
+  scale_y_continuous(expand = c(0,0), limits = c(0,60))+ 
+    labs(y = "No. of variants", x = "'Low support' alteration depth")
+plot1
+dev.off()
 
-vcf_annotated %>% 
-  filter(FILTER == "PASS" & Tissue != "Blood" & 
-           Sample_ID %in% somatic_IDs,
-         alt_DP < 30) %>% 
+plot1b = vcf_annotated %>% 
+  filter(FILTER == "LowSupport" & Tissue != "Blood" & Sample_ID %in% somatic_IDs) %>% 
   ggplot(aes(x = alt_DP)) +
+  geom_bar(stat = "count", fill = "midnightblue") + 
+  theme_bw() +  
+  scale_x_continuous(limits = c(1,11),expand = c(0,0), minor_breaks = seq(1,11,1),
+                     breaks = seq(0,12,2)) + 
+  scale_y_continuous(expand = c(0,0), limits = c(0,60))+ 
+  labs(y = "No. of variants", x = "Alteration depth")
+
+plot2 = vcf_annotated %>% 
+  filter(FILTER == "PASS" & Tissue != "Blood" & Sample_ID %in% somatic_IDs) %>% 
+  mutate(meanval = mean(alt_DP), medval = median(alt_DP)) %>% 
+  ggplot(aes(x = alt_DP), width = 1) +
     geom_bar(stat = "count") + 
-    theme_bw() + scale_x_continuous(minor_breaks = c(seq(0,30,1)), breaks = c(seq(0,30,5))) + 
-    labs(y = "Count", x = "Alteration depth", title = "Alteration depth of `PASS` variants in plasma/urine")
+  geom_vline(aes(xintercept = meanval), colour = "red", linetype = "dashed") + 
+  geom_vline(aes(xintercept = medval), colour = "limegreen", linetype = "dashed") + 
+    theme_bw() + 
+    scale_x_continuous(#minor_breaks = c(seq(0,30,1)), breaks = c(seq(0,30,5)),
+                       limits = c(0,101),expand = c(0,0)) + 
+  scale_y_continuous(expand = c(0,0), limits = c(0,17.5))+
+    labs(y = "No. of variants", x = "'PASS' alteration depth")
 
 vcf_restore = vcf_annotated %>% 
   filter(FILTER == "LowSupport" & Tissue != "Blood" & 
            Sample_ID %in% somatic_IDs & alt_DP >= 3) # keep lowsupport variants with at least 3 ALT observations
 
-vcf_restore %>% 
+restore_count = vcf_restore %>% # no. of filtered somatic variants per sample
+  mutate(Tissue = ifelse(Sample=="CIRCB35a_PLASMA","Plasma_a",Tissue),
+         Tissue = ifelse(Sample=="CIRCB35b_PLASMA","Plasma_b",Tissue)) %>%
+  count(Patient, Timepoint, Tissue, name = "Restored variants") %>% 
+  arrange(Patient, Tissue, Timepoint)
+restore_count
+
+plot3 = vcf_restore %>% 
   ggplot(aes(x = QUAL)) +
-    geom_bar() + # a Pred quality score of 20 = 99% base call accuracy 
+    geom_bar(fill = "green4") + # a Pred quality score of 20 = 99% base call accuracy 
     theme_bw() + 
-    labs(title = "Sequencing quality of `LowSupport` variants with alt_DP >= 3")
+    labs(y = "No. of variants", x = "Phred quality score") + 
+  scale_x_continuous(limits = c(10,102), expand = c(0,0), breaks =seq(10,100,10)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,102))
+
+
+# combine plots
+if(plot_figs) png(file.path(resdir,"low_support_panel2.png"), width = 2000,height = 800,res = 350)
+ggpubr::ggarrange(plot2, plot3)
+dev.off()
+
+summary(vcf_restore$QUAL)
 
 # combine lowsupport variants with ALT_DP >= 3 with PASS variants 
 vcf_somatic = rbind(vcf_somatic, vcf_restore)
-count(vcf_somatic,Sample,Timepoint, Patient) %>% # new no. of somatic variants per sample 
-  arrange(Patient, Timepoint, n)
+
+somatic_count2 = vcf_somatic %>% 
+  mutate(Tissue = ifelse(Sample=="CIRCB35a_PLASMA","Plasma_a",Tissue),
+         Tissue = ifelse(Sample=="CIRCB35b_PLASMA","Plasma_b",Tissue)) %>%
+  count(Patient, Timepoint, Tissue, name = "Final count") %>% 
+  arrange(Patient, Tissue, Timepoint)
+somatic_count2
+
+var_counts = prefilt_count %>% 
+  left_join(somatic_count1) %>% 
+  left_join(restore_count) %>% 
+  left_join(somatic_count2) %>% 
+  mutate(Tissue = ifelse(Tissue=="U","Urine","Plasma"),
+         Patient = gsub("Patient_","",Patient)) %>% 
+  select(Patient, Tissue, everything()) %>% 
+  filter(Patient != "Lung") 
+  
+
+write_delim(var_counts, file.path(resdir,"variant_filtering_counts.txt"), delim = "\t")
 
 # print some stats
 table(vcf_somatic$Func.refGene) # no. of exonic variant in all samples

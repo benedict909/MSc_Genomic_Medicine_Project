@@ -15,8 +15,8 @@ load2object <- function (filename)
 
 # Define directories 
 raw_data_dir = "~/Masters_research_project/Raw_data" # directory containing all input .vcf files
-per_sample_dir = "~/Masters_research_project/per_sample_vcf/"; if(!file.exists(per_sample_dir)) dir.create(per_sample_dir)
-vcf_dir = "~/Masters_research_project/VCF_files/"; if(!file.exists(vcf_dir)) dir.create(vcf_dir)
+per_sample_dir = "~/Masters_research_project/per_sample_vcf/"; if(!dir.exists(per_sample_dir)) dir.create(per_sample_dir)
+vcf_dir = "~/Masters_research_project/VCF_files/"; if(!dir.exists(vcf_dir)) dir.create(vcf_dir)
 
 
 # 1. Load each individual VCF and convert to dataframe ----

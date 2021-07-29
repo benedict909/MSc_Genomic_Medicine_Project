@@ -1,7 +1,7 @@
 # Script 5 - analyse MAF & VCF files
 
 options(connectionObserver = NULL); library(org.Hs.eg.db) # BiocManager::install("org.Hs.eg.db")
-library(maftools) #  BiocManager::install("PoisonAlien/maftools")
+library(maftools) # BiocManager::install("PoisonAlien/maftools")
 library(tidyverse)
 library(grid)
 library(venn)
@@ -26,7 +26,7 @@ load(file.path(vcf_dir,"vcf_LBsamples_filtered_allcolumns.RData")) # vcf_somatic
 load(file.path(vcf_dir,"VCF_allsamples_unfiltered_allcolumns_annovar.RData"))
 load(file.path(vcf_dir,"annot_table.RData")) # annot
 
-plot_figs = c(TRUE, FALSE)[1]
+plot_figs = c(TRUE, FALSE)[2]
 
 
 # 1. Make annot table & define colours ----
@@ -69,68 +69,109 @@ pdac_cols = all_cols[!grepl("Lung|ng",names(all_cols))]
 # save(annot,file =file.path(vcf_dir,"annot_table.RData"))
 
 
-# 2. Mutant allele frequency (MAF) analysis ----
+# 2. Sequencing stats ----
 
-summary(vcf_somatic$gt_VF)
+# mean average of Mb per sample passing sequencing quality control metrics in the gene panel
+per_sample_dir = "~/Masters_research_project/per_sample_vcf/"; if(!dir.exists(per_sample_dir)) dir.create(per_sample_dir)
+nbases = c()
+mean_DP = c()
+for(filename in list.files(per_sample_dir)){
+  print(paste("Loading and adding", filename, "to the combined VCF"))
+  
+  current_vcf = load2object(file.path(per_sample_dir,filename))
+  
+  nbases_current = current_vcf %>% 
+    filter(FILTER=="PASS") %>% 
+    nrow()
+  
+  mean_DP_current = current_vcf %>% 
+    filter(FILTER=="PASS") %>% 
+    pull(DP) %>% 
+    mean()
 
-maf_df = vcf_somatic %>% 
-  group_by(Sample) %>% 
-  summarise(median_MAF = median(gt_VF)) %>% # calculate median MAF in each sample
-  left_join(annot) %>% 
-  group_by(Patient, Timepoint) %>% 
-  mutate(mean_median_MAF = mean(median_MAF), # calc mean MAF as multiple samps/timepoint in Patient 1 
-         Type  = ifelse(Patient == "Lung","Lung","PDAC"),
-         n_weeks = ifelse(Patient == "Lung",0,n_weeks)) 
+  rm(current_vcf) # to save memory
+  names(nbases_current) = filename
+  names(mean_DP_current) = filename
+  
+  if(filename == per_sample_files[1]){
+    nbases = nbases_current
+    mean_DP = mean_DP_current
+  }else{
+    nbases = c(nbases, nbases_current)
+    mean_DP = c(mean_DP, mean_DP_current)
+  }
+}
 
-# Plot MAF
-if(plot_figs) png(file.path(resdir,"MAF_nolung.png"), width = 1500,height = 1000,res = 350)
-ggplot(filter(maf_df,Patient!="Lung"), aes(x = n_weeks, y = mean_median_MAF)) + 
-  geom_line( aes(group = Patient)) + 
-  geom_point(aes(colour = pdaccol), size = 2.5) + 
-  scale_color_manual(drop=F, values = pdac_cols)+
-  scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c("Diagnosis",6,12,18,24,30)) + 
-  scale_y_continuous(limits = c(0,.5), expand = c(0,0))+
-  labs(y = "Median mutation allele frequency", x = "Weeks after diagnosis") + 
-  theme_bw() + theme(legend.title = element_blank(),legend.text =  element_markdown())
-if(plot_figs) dev.off()
+# mean bases passing quality control (i.e. FILTER == "PASS")
+mean(nbases) / 1000000
+mean(nbases[!grepl("Blood",names(nbases))]) / 1000000
+mean(nbases[grepl("Blood",names(nbases))]) / 1000000
+
+# mean depth
+mean(mean_DP) 
+mean(mean_DP[!grepl("Blood",names(mean_DP))]) 
+mean(mean_DP[grepl("Blood",names( mean_DP))]) 
+
+# mean no. of blood variants
+vcf_annotated %>% 
+  filter(Tissue=="Blood"&Patient!="Lung", FILTER=="PASS") %>% 
+  count(Sample) %>% 
+  pull(n) %>% summary()
+
+# mean no. of liquid biopsy variants
+vcf_annotated %>% 
+  filter(Tissue!="Blood"&Patient!="Lung", FILTER=="PASS") %>% 
+  count(Sample) %>% 
+  pull(n) %>% summary()
+
+# ctDNA variant stats
+vcf_somatic %>% 
+  count(Sample) %>% 
+  pull(n) %>% summary()
+
+# restore variants stats
+restore_counts = vcf_annotated %>% 
+  filter(FILTER == "LowSupport" & Tissue != "Blood" & 
+         Sample_ID %in% vcf_somatic$Sample_ID & alt_DP >= 3) %>%  # keep lowsupport variants with at least 3 ALT observations
+  count(Sample,Patient, name = "restore_count") 
+
+restore_counts %>% 
+  pull(restore_count) %>% summary()
+
+# corr
+# germline variants
+vcf_blood = vcf_annotated %>% 
+  filter(Tissue == "Blood" & FILTER == "PASS") 
+
+# PDAC somatic variants = variants not found in blood
+blood_IDS = vcf_annotated %>% 
+  filter(Tissue == "Blood" & FILTER == "PASS") %>% 
+  pull(Sample_ID)
+
+count_tab = vcf_annotated %>% 
+  filter(FILTER == "PASS" & Tissue != "Blood" & !Sample_ID %in% blood_IDS, Patient!="Lung") %>% 
+  count(Patient, name = "pass_count") %>% 
+  left_join(restore_counts) 
+
+count_tab %>% 
+  ggplot(aes(x = pass_count, y = restore_count)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", se = T)
+  
+cor.test(count_tab$pass_count,count_tab$restore_count)
+
+lm(count_tab$restore_count~count_tab$pass_count)
+
+# somatic stats
+table(vcf_somatic$Type)
+nrow(vcf_somatic)
+
+# gDNA/cfDNA comparison
+table(blood_IDS %in% vcf_annotated$Sample_ID[vcf_annotated$Tissue!="Blood"])
+length(unique(blood_IDS))
 
 
-# Plot MAF with lung
-maf_df$n_weeks[maf_df$Patient=="Lung"] = 30 #so x-axis label is not diagnosis
-
-maf_plot = ggplot() +
-  geom_jitter(data =  filter(maf_df, Patient == "Lung"),aes(colour = graphcol, x = n_weeks, y = median_MAF),
-              size = 2.5,height = 0.01, width = 0) + 
-  geom_line(data =   filter(maf_df, Patient != "Lung"), aes(group = Patient, x = n_weeks, y = mean_median_MAF)) +
-  geom_point(data =  filter(maf_df, Patient != "Lung"),aes(colour = graphcol, x = n_weeks, y = mean_median_MAF), size = 2.5) +
-  scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c("Diagnosis",6,12,18,24,"")) +
-  scale_y_continuous(limits = c(0,.5), expand = c(0,0))+
-  theme_bw() + theme(legend.title = element_blank(), legend.text =  element_markdown()) + 
-  scale_color_manual(drop=F, values = all_cols)+
-  labs(y = "Median mutation allele frequency", x = "Weeks after diagnosis") + 
-  facet_grid(~ Type, scales = "free_x", space = "free")
-
-maf_gt = ggplot_gtable(ggplot_build(maf_plot))
-# gtable::gtable_show_layout(gt)
-maf_gt$widths[5] = 50*maf_gt$widths[5] # increase the width of the lung facet
-
-if(plot_figs) png(file.path(resdir,"MAF_lung.png"), width = 1500,height = 1000,res = 300)
-grid.draw(maf_gt)
-if(plot_figs) dev.off()
-
-
-# calculate % changes
-# a. % decrease in MAF in Patient 1 between T0 and T1
-patient_1_T0_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_1" & maf_df$Timepoint == "T0"])
-patient_1_T1_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_1" & maf_df$Timepoint == "T1"])
-(patient_1_T0_MAF - patient_1_T1_MAF) * 100 / patient_1_T0_MAF 
-
-# b. % increase in MAF in Patient 4 between T0 and T1
-patient_4_T0_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_4" & maf_df$Timepoint == "T0"])
-patient_4_T1_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_4" & maf_df$Timepoint == "T1"])
-(patient_4_T1_MAF - patient_4_T0_MAF) * 100 / patient_4_T0_MAF
-
-# 3. Tumour mutation burden (TMB) analysis ----
+# 2. Tumour mutation burden (TMB) analysis ----
 
 panel_df = data.frame("Sample" = unique(vcf_somatic$Sample), "n_megabases" = NA)
 
@@ -154,7 +195,7 @@ tmb_df = vcf_somatic %>%
   left_join(panel_df) %>% 
   mutate(TMB = n_mut / n_megabases, # divide mut no. by panel size to calc TMB
          Patient_tissue = paste(Patient, Tissue, sep = "_")) %>% 
-  group_by(Patient, n_weeks) %>% 
+  group_by(graphcol, n_weeks) %>% 
   mutate(TMB_mean = mean(TMB),
          Type  = ifelse(Patient == "Lung","Lung","PDAC"),
          n_weeks = ifelse(Patient == "Lung",0,n_weeks))
@@ -169,6 +210,16 @@ ggplot(filter(tmb_df,Patient != "Lung")) +
   scale_color_manual(drop=F, values = pdac_cols)+
   labs(y = "Tumour mutation burden (mut/Mb)", x = "Weeks after diagnosis")
 if(plot_figs) dev.off()
+
+p1_vals = tmb_df %>% 
+  filter(Patient=="Patient_1",Timepoint!="T3") %>% 
+  pull(TMB_mean)
+(max(p1_vals) - min(p1_vals))/12 # no. of muts gained per week in patient 1
+
+p2_vals = tmb_df %>% 
+  filter(Patient=="Patient_2") %>% 
+  pull(TMB_mean)
+(max(p2_vals) - min(p2_vals))/26 # no. of muts gained per week in patient 1
 
 # plot with lung
 tmb_df$n_weeks[tmb_df$Patient=="Lung"] = 30 #so x-axis label is not diagnosis
@@ -214,7 +265,57 @@ vcf_somatic %>%
 # therefore better do calc somatic mutation rate of the whole panel, not just coding mutations
 # as this gives a more accurate readout of the likely relative no. of neoantigens present in the sample
 
-# 4. Venn diagrams ----
+# comaprison 
+
+exonic_tmb = vcf_somatic %>% 
+  filter(Func.refGene=="exonic") %>% 
+  count(Sample, name = "n_mut") %>% 
+  left_join(annot) %>% 
+  group_by(graphcol, n_weeks) %>% 
+  mutate(TMB = n_mut / 1.2,
+         exonic_tmb = mean(TMB)) %>% 
+  ungroup() %>% 
+  dplyr::select(Sample, exonic_tmb)
+
+tmb_df = tmb_df %>% 
+  left_join(exonic_tmb)
+
+tmb_corr = cor.test(tmb_df$TMB_mean, tmb_df$exonic_tmb)
+tmb_text = paste("atop(italic(r)==",round(tmb_corr$estimate,2),",p.val==",
+                 round(tmb_corr$p.value,11),")") # ?plotmath
+corcol =  "royalblue4"
+
+if(plot_figs) png(file.path(resdir,"TMB_correltaion.png"), width = 1500,height = 1000,res = 350)
+# if(plot_figs) png(file.path(resdir,"TMB_correltaion_annot.png"), width = 1500,height = 1500,res = 350)
+ggplot(tmb_df, aes(y = TMB_mean, x = exonic_tmb)) + 
+  geom_point(aes(color = graphcol), size = 2.5) + 
+  geom_smooth(method = "lm",se = F, colour = corcol, linetype = "dashed") + 
+  scale_color_manual(drop=F, values = all_cols) + 
+  theme_bw() + theme(legend.title = element_blank(), legend.text = element_markdown()) + 
+  labs(y = "Total TMB (mut/Mb)", x = "Coding TMB (mut/Mb)") + 
+  geom_label(aes(label = tmb_text, x = 8.5, y = 4), colour = corcol, fill = "white",
+             size = 3, parse = T) + 
+  scale_x_continuous(breaks = seq(0,14,2), limits = c(0,12.5), expand = c(0,0)) + 
+  scale_y_continuous(breaks = seq(0,25,5),limits = c(0,27), expand = c(0,0))+ #limits = c(0,2), expand = c(0,0)
+if(plot_figs) dev.off()
+
+# corr with non-synomyomous SNV rate
+nonsyn_tmb = vcf_somatic %>% 
+  filter(ExonicFunc.refGene=="nonsynonymous SNV") %>% 
+  count(Sample, name = "n_mut") %>% 
+  left_join(annot) %>% 
+  group_by(graphcol, n_weeks) %>% 
+  mutate(TMB = n_mut / 1.2,
+         nonsyn_tmb = mean(TMB)) %>% 
+  ungroup() %>% 
+  dplyr::select(Sample, nonsyn_tmb)
+
+tmb_df = tmb_df %>% 
+  left_join(nonsyn_tmb)
+
+cor.test(tmb_df$TMB_mean, tmb_df$nonsyn_tmb)
+
+# 3. Venn diagrams ----
 
 IDs_list = c() # generate list of mutation IDs present in each sample 
 for(i in 1:length(unique(vcf_somatic$Sample))){
@@ -260,7 +361,7 @@ venn(x = IDs_list[annot$Sample[annot$Patient == "Lung" & annot$Tissue != "Blood"
   ggtitle("Lung") + theme(plot.title = element_text(size = 20))
 
 
-# 5. MAF load & summary ----
+# 4. MAF load & summary ----
 
 # A. load & combine germline MAFs
 maf_input_dir = "~/Masters_research_project/MAF_files"
@@ -285,10 +386,37 @@ gl_keep = maf_germline@data %>%
   filter(FILTER == "PASS", CLIN_SIG != "" | Hugo_Symbol == "MSH3") %>% # add MSH3 due to association with MSI
   left_join(annot) %>% 
   filter(Patient != "Lung") %>% 
-  select(Patient,Hugo_Symbol,HGVSp, Consequence, CLIN_SIG, gnomAD_AF, SIFT, PolyPhen) %>% 
+  select(Patient,Hugo_Symbol,POS = Start_Position, REF = Reference_Allele,ALT = Tumor_Seq_Allele2, HGVSp, Consequence, CLIN_SIG, gnomAD_AF, SIFT, PolyPhen) %>% 
   arrange(Patient)
 
 gl_keep
+
+# write germline table 
+gl_write = maf_germline@data %>% 
+  filter(FILTER == "PASS", CLIN_SIG != "" | Hugo_Symbol == "MSH3") %>% # add MSH3 due to association with MSI
+  left_join(annot) %>% 
+  filter(Patient != "Lung") %>% 
+  select(`gnomAD freq.` = gnomAD_AF, everything()) %>% 
+  mutate(ID = paste0(Chromosome, Start_Position, Reference_Allele, Tumor_Seq_Allele2, sep = "_")) %>% 
+  left_join(vcf_somatic) %>% 
+  select(Patient,Gene = Hugo_Symbol, `Transcript ID` = RefSeq, HGVSc, HGVSp, `Variant consequence` = Consequence, 
+         CLIN_SIG, `gnomAD freq.`, `1000G`, SIFT, PolyPhen) %>% 
+  arrange(Patient) %>% 
+  mutate(Patient = gsub("Patient_","",Patient), 
+         `Variant consequence` = gsub("_"," ",`Variant consequence`),
+         PolyPhen = gsub("_"," ", PolyPhen),
+         SIFT = gsub("_"," ", SIFT),
+         CLIN_SIG = gsub("_"," ", CLIN_SIG))
+
+write_delim(gl_write, 
+            file = file.path(resdir,("germline_variants.txt")),
+            delim = "\t",col_names = T)
+
+# max gnomAD freq not designated as "common variant" by VEP 
+maf_germline@data %>% 
+  filter(!is.na(gnomAD_AF), FILTER != "common_variant") %>% 
+  max(gnomAD_AF) %>% 
+  max()
 
 # make df of germline muts to add to somatic MAFs as a "cnTable"
 # gl_keep_genes = c("MLH1","MSH2","MSH3","B2M") # genes that are marked PASS in maf_germline@data$FILTER that are relevant to PDAC
@@ -337,6 +465,8 @@ if(plot_figs) png(file.path(resdir,"variant_summary.png"), width = 2500,height =
 plotmafSummary(maf = maf_summary, rmOutlier = F, addStat = 'median', dashboard = TRUE, 
                titvRaw = FALSE, color = variant_cols, showBarcodes = F)
 if(plot_figs) dev.off()
+
+table(vcf_somatic$ExonicFunc.refGene[vcf_somatic$Patient!="Lung"])
 
 
 # MAF colours 
@@ -402,7 +532,6 @@ for(input_file in input_files){
 samp_order = annot %>% # sample order for oncoplot
   arrange(Patient, Tissue, Timepoint) %>% 
   pull(Tumor_Sample_Barcode)
-
 
 # get KEGG pathways
 somatic_genes = genesum %>% 
@@ -598,14 +727,142 @@ prevalence_df %>%
 if(plot_figs) dev.off()
 
 
+# 7. Mutant allele frequency (MAF) analysis ----
+
+summary(vcf_somatic$gt_VF)
+
+maf_df = vcf_somatic %>% 
+  group_by(Sample) %>% 
+  summarise(median_MAF = median(gt_VF)) %>% # calculate median MAF in each sample
+  left_join(annot) %>% 
+  group_by(Patient, Timepoint) %>% 
+  mutate(mean_median_MAF = mean(median_MAF), # calc mean MAF as multiple samps/timepoint in Patient 1 
+         Type  = ifelse(Patient == "Lung","Lung","PDAC"),
+         n_weeks = ifelse(Patient == "Lung",0,n_weeks)) 
+
+# Plot MAF
+if(plot_figs) png(file.path(resdir,"MAF_nolung.png"), width = 1500,height = 1000,res = 350)
+MAF_nolung = ggplot(filter(maf_df,Patient!="Lung"), aes(x = n_weeks, y = mean_median_MAF)) + 
+  geom_line( aes(group = Patient)) + 
+  geom_point(aes(colour = pdaccol), size = 2.5) + 
+  scale_color_manual(drop=F, values = pdac_cols)+
+  scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c("Diagnosis",6,12,18,24,30)) + 
+  scale_y_continuous(limits = c(0,.5), expand = c(0,0))+
+  labs(y = "Median mutation allele frequency", x = "Weeks after diagnosis") + 
+  theme_bw() + theme(legend.title = element_blank(),legend.text =  element_markdown(),
+                     legend.position = "bottom")
+if(plot_figs) dev.off()
+
+
+# Plot MAF with lung
+maf_df$n_weeks[maf_df$Patient=="Lung"] = 30 #so x-axis label is not diagnosis
+
+maf_plot = ggplot() +
+  geom_jitter(data =  filter(maf_df, Patient == "Lung"),aes(colour = graphcol, x = n_weeks, y = median_MAF),
+              size = 2.5,height = 0.01, width = 0) + 
+  geom_line(data =   filter(maf_df, Patient != "Lung"), aes(group = Patient, x = n_weeks, y = mean_median_MAF)) +
+  geom_point(data =  filter(maf_df, Patient != "Lung"),aes(colour = graphcol, x = n_weeks, y = mean_median_MAF), size = 2.5) +
+  scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c("Diagnosis",6,12,18,24,"")) +
+  scale_y_continuous(limits = c(0,.5), expand = c(0,0))+
+  theme_bw() + theme(legend.title = element_blank(), legend.text =  element_markdown()) + 
+  scale_color_manual(drop=F, values = all_cols)+
+  labs(y = "Median mutation allele frequency", x = "Weeks after diagnosis") + 
+  facet_grid(~ Type, scales = "free_x", space = "free")
+
+maf_gt = ggplot_gtable(ggplot_build(maf_plot))
+# gtable::gtable_show_layout(gt)
+maf_gt$widths[5] = 50*maf_gt$widths[5] # increase the width of the lung facet
+
+if(plot_figs) png(file.path(resdir,"MAF_lung.png"), width = 1500,height = 1000,res = 300)
+grid.draw(maf_gt)
+if(plot_figs) dev.off()
+
+
+# calculate % changes
+# a. % decrease in MAF in Patient 1 between T0 and T1
+patient_1_T0_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_1" & maf_df$Timepoint == "T0"])
+patient_1_T1_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_1" & maf_df$Timepoint == "T1"])
+(patient_1_T0_MAF - patient_1_T1_MAF) * 100 / patient_1_T0_MAF 
+
+patient_1_T2_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_1" & maf_df$Timepoint == "T2"])
+(patient_1_T0_MAF - patient_1_T2_MAF) * 100 / patient_1_T0_MAF 
+
+# b. % increase in MAF in Patient 4 between T0 and T1
+patient_4_T0_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_4" & maf_df$Timepoint == "T0"])
+patient_4_T1_MAF = unique(maf_df$mean_median_MAF[maf_df$Patient == "Patient_4" & maf_df$Timepoint == "T1"])
+(patient_4_T1_MAF - patient_4_T0_MAF) * 100 / patient_4_T0_MAF
+
+# plot patient 1 pathways MAF 
+
+# maf_combo_df = as.data.frame(maf_combined@data) %>% 
+#   dplyr::select(where(~!all(is.na(.x)))) %>% 
+#   filter(Hugo_Symbol %in% somatic_genes) %>% 
+#   dplyr::select(Sample = Tumor_Sample_Barcode, CHROM = Chromosome, POS = Start_Position, 
+#                 REF = Reference_Allele, ALT = Tumor_Seq_Allele2) %>% 
+#   left_join(annot) %>%
+#   mutate(Sample_ID = paste(Sample, CHROM, POS, REF, ALT, sep = "_"),
+#          Patient_ID = paste(Patient, CHROM, POS, REF, ALT, sep = "_"))
+#          
+# driver_IDs = unique(maf_combo_df$Patient_ID)
+
+pathway_cols = c("white","skyblue2","orchid4","seagreen2","yellow3")
+names(pathway_cols) = c("**Pathway**",unique(pathways_2col$Pathway[pathways_2col$Pathway!="other"]))
+
+maf_p1_pathways_df = vcf_somatic %>% 
+  mutate(Tissue = ifelse(Tissue == "U", "Urine","Plasma")) %>% 
+  filter(Gene.refGene %in% oncoplot_genes, Func.refGene=="exonic") %>% 
+  left_join(annot) %>% 
+  rename(Gene = Gene.refGene) %>% 
+  group_by(Patient, Gene, Timepoint) %>% 
+  mutate(mean_VF = median(gt_VF),
+         mean_DP = mean(alt_DP)) %>% 
+  ungroup() %>% 
+  left_join(pathways_2col) %>% 
+  filter(Patient == "Patient_1", !is.na(Pathway)) %>% 
+  group_by(Timepoint, Pathway) %>% 
+  mutate(mean_VF_allgenes = mean(gt_VF),
+         Pathway = factor(Pathway, levels = names(pathway_cols))) 
+
+maf_p1_pathways_plot = maf_p1_pathways_df %>% 
+  ggplot(aes(x = n_weeks, y = mean_VF_allgenes)) +
+    geom_line( aes(group = Pathway), colour = "black") + 
+    geom_point(size=2.5, aes(colour=Pathway)) + theme_bw() + 
+    labs(x = "Weeks after diagnosis",y = "Median mutation allele frequency") + 
+    scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c("Diagnosis",6,12,18,24,30)) + 
+    scale_y_continuous(limits = c(0,.5), expand = c(0,0))+
+    scale_colour_manual(values = pathway_cols, drop = F) + 
+    # guides(colour = guide_legend(nrow = 2)) + 
+    theme(legend.text =element_markdown(), legend.title = element_blank()) 
+
+if(plot_figs) png(file.path(resdir,"MAF_patient1_pathways.png"), width = 1500,height = 1000,res = 350)
+maf_p1_pathways_plot
+if(plot_figs) dev.off()
+
+# if(plot_figs) png(file.path(resdir,"MAF_bothpanels.png"), width = 3000,height = 1200,res = 350)
+# ggpubr::ggarrange(MAF_nolung, maf_p1_pathways)
+# if(plot_figs) dev.off()
+
+maf_p1_pathways_df %>% 
+  select(Pathway, Timepoint, mean_VF_allgenes) %>% 
+  distinct() %>% 
+  filter(grepl("Cancer",Pathway))
+
+patient_1_T0_MAF = unique(maf_p1_pathways_df$mean_VF_allgenes[grepl("Cancer",maf_p1_pathways_df$Pathway) & maf_p1_pathways_df$Timepoint == "T0"])
+patient_1_T1_MAF = unique(maf_p1_pathways_df$mean_VF_allgenes[grepl("Cancer",maf_p1_pathways_df$Pathway) & maf_p1_pathways_df$Timepoint == "T1"])
+patient_1_T2_MAF = unique(maf_p1_pathways_df$mean_VF_allgenes[grepl("Cancer",maf_p1_pathways_df$Pathway) & maf_p1_pathways_df$Timepoint == "T2"])
+
+(patient_1_T0_MAF - patient_1_T1_MAF) * 100 / patient_1_T0_MAF 
+(patient_1_T0_MAF - patient_1_T2_MAF) * 100 / patient_1_T0_MAF 
+
+
 # 7. Study driver genes from MAF ----
-print_mut = function(gene_name = NA, input_df = as.data.frame(maf_combined@data), 
+print_mut = function(gene_name = NA, input_df = as.data.frame(maf_summary@data), 
                      annot_df = annot) {
   if (all(is.na(gene_name))) 
     gene_name = unique(input_df$SYMBOL)
   returndf = input_df %>%
-    select(where(~!all(is.na(.x)))) %>%
-    select(Tumor_Sample_Barcode, SYMBOL, HGVSp, CLIN_SIG) %>%
+    dplyr::select(where(~!all(is.na(.x)))) %>%
+    dplyr::select(Tumor_Sample_Barcode, SYMBOL, HGVSc,RefSeq, HGVSp, CLIN_SIG) %>%
     filter(SYMBOL %in% gene_name) %>%
     distinct() %>%
     left_join(annot_df) %>%
@@ -615,7 +872,7 @@ print_mut = function(gene_name = NA, input_df = as.data.frame(maf_combined@data)
 
 print_mut(c("KRAS"))# G12* in KRAS most commonly mutated locus in PDAC wt KRAS = better prognosis
 
-print_mut(c("TP53"))
+maf_sprint_mut(c("TP53"))
 print_mut("PIK3R2")
 
 # MLH1, MSH2 & MSH3 are DNA mismatch repair genes. Mutations in these genes are associated with microsatelite instability (MSI), a marker predictive if response to immunotherapy.
@@ -640,6 +897,11 @@ if(plot_figs) png(file.path(resdir,"PRKDC_lollipop_image.png"), width = 1500,hei
 lollipopPlot(maf = maf_p1, gene = 'PRKDC',AACol = 'HGVSp', showMutationRate = F,pointSize = 3,
              showDomainLabel = F, labelOnlyUniqueDoamins = T,titleSize = c(0,0),printCount = F)
 if(plot_figs) dev.off()
+
+rev(unique(maf_summary@data$HGVSc[maf_summary@data$Hugo_Symbol=="PRKDC"]))
+unique(maf_summary@data$RefSeq[maf_summary@data$Hugo_Symbol=="PRKDC"])
+rev(unique(maf_summary@data$HGVSp[maf_summary@data$Hugo_Symbol=="PRKDC"]))
+
 
 # See Tan et al. (2020, Journal for ImmunoTherapy of Cancer) for more info on PRKDC mut association with immunotherapy
 
@@ -705,7 +967,7 @@ biomarkers_df = biomarkers_df %>%
          Sample = ifelse(Sample == "CIRCB35_PLASMA","CIRCB35a_PLASMA",Sample)) %>% 
   left_join(annot) %>% 
   mutate(Type = ifelse(grepl("14",Sample),"Lung","PDAC"),
-         n_weeks = ifelse(is.na(n_weeks),0,n_weeks)) %>% 
+         n_weeks = ifelse(is.na(n_weeks),33,n_weeks)) %>% 
   group_by(Patient,Timepoint) %>% 
   mutate(Mean_perc_unstable = mean(Percent_Unstable_Sites))  
 
@@ -772,28 +1034,6 @@ biomarkers_df %>%
   mutate(Mean_perc_unstable = mean(Percent_Unstable_Sites)) %>%  
   plot_MSI(grouping = "Patient", yvar = "Mean_perc_unstable")
 
-msiplot = ggplot() + 
-  geom_line(data=filter(biomarkers_df,Patient != "Lung"),
-            aes(group = Patient,x = n_weeks, y = Mean_perc_unstable)) +
-  geom_point(data=filter(biomarkers_df,Patient == "Lung"),
-             aes(colour = graphcol,x = n_weeks, y = Percent_Unstable_Sites), size = 2.5) + 
-  geom_point(data=filter(biomarkers_df,Patient != "Lung"),
-               aes(colour = graphcol,x = n_weeks, y = Mean_perc_unstable), size = 2.5) +
-  scale_colour_manual(values = all_cols, drop=F) +
-  theme_bw() + theme(legend.title = element_blank(), legend.text = element_markdown()) + 
-  facet_grid(~ Type, scales = "free_x", space = "free") +
-  scale_x_continuous(breaks = c(0,6,12,18,24,30), labels = c(0,6,12,18,24,30)) +
-  scale_y_continuous(limits = c(0,8.7), expand = c(0,0)) +
-  labs(y = "Unstable microsatellite sites (%)", x = "Weeks after diagnosis")  
-  
-msi_gt = ggplot_gtable(ggplot_build(msiplot))
-# gtable::gtable_show_layout(gt)
-msi_gt$widths[5] = 50*msi_gt$widths[5] # increase the width of the lung facet
-
-if(plot_figs) png(file.path(resdir,"MSI_lung.png"),  width = 1500,height = 1000,res = 300)
-grid.draw(msi_gt)
-if(plot_figs) dev.off()
-
 # calc corr of MSI increase over time
 lmdf = biomarkers_df %>% 
   filter(Treatment=="Responder") %>% 
@@ -804,6 +1044,37 @@ responder_corr = cor.test(x=lmdf$Mean_perc_unstable,y=lmdf$n_weeks, method = "pe
 cor_text = paste("atop(italic(r)==",round(responder_corr$estimate,2),",p.val==",
                  round(responder_corr$p.value,3),")") # ?plotmath
 corcol =  "royalblue4"
+
+cor_annot = data.frame(Type = "PDAC", x = 22, y = 1)
+
+msiplot = ggplot() + 
+  geom_line(data=filter(biomarkers_df,Patient != "Lung"),
+            aes(group = Patient,x = n_weeks, y = Mean_perc_unstable)) +
+  geom_point(data=filter(biomarkers_df,Patient == "Lung"),
+             aes(colour = graphcol,x = n_weeks, y = Percent_Unstable_Sites), size = 2.5) + 
+  geom_point(data=filter(biomarkers_df,Patient != "Lung"),
+               aes(colour = graphcol,x = n_weeks, y = Mean_perc_unstable), size = 2.5) +
+  scale_colour_manual(values = all_cols, drop=F) +
+  theme_bw() + theme(legend.title = element_blank(), legend.text = element_markdown()) + 
+  facet_grid(~ Type, scales = "free_x", space = "free") +
+  scale_x_continuous(breaks = c(0,6,12,18,24,30,36), labels = c("Diagnosis",6,12,18,24,30,36)) +
+  scale_y_continuous(limits = c(0,8.7), expand = c(0,0)) +
+  labs(y = "Unstable microsatellite sites (%)", x = "Weeks after diagnosis")  +
+  geom_smooth(data=filter(biomarkers_df,Treatment=="Responder"),method = "lm", se = FALSE, 
+              colour = corcol, linetype = "dashed", size = 0.7, #show.legend=TRUE,
+              aes(x = n_weeks, y = Mean_perc_unstable)) + 
+  geom_label(data = cor_annot, aes(label = cor_text, x = 22, y = 1, group = Type), colour = corcol, fill = "white",
+             size = 3, parse = T) 
+  
+msi_gt = ggplot_gtable(ggplot_build(msiplot))
+# gtable::gtable_show_layout(msi_gt)
+msi_gt$widths[5] = 50*msi_gt$widths[5] # increase the width of the lung facet
+
+if(plot_figs) png(file.path(resdir,"MSI_lung.png"),  width = 1600,height = 1000,res = 300)
+grid.draw(msi_gt)
+if(plot_figs) dev.off()
+
+
 
 if(plot_figs) png(file.path(resdir,"MSI_nolung.png"),  width = 1500,height = 1000,res = 300)
 ggplot() + 
@@ -827,6 +1098,8 @@ if(plot_figs) dev.off()
 reg_output = summary(lm(formula= Mean_perc_unstable~n_weeks, data = lmdf))
 reg_output$coefficients["n_weeks","Estimate"] # % MSI increase per week
 reg_output$coefficients["(Intercept)","Estimate"]
+
+sd(biomarkers_df$Percent_Unstable_Sites[biomarkers_df$Patient=="Lung"])
 
 # Biomarkers file TMB
 biomarkers_df = biomarkers_df %>% 
@@ -1013,20 +1286,69 @@ venn(x = list("Urine" = Patient_1_urine, "Plasma" = Patient_1_plasma),
   theme(plot.background = element_blank(), panel.background = element_blank())
 if(plot_figs) dev.off()
 
+# no. of unique somatic mutations in Patient 1
+length(unique(vcf_somatic$ID[grepl("1",vcf_somatic$Patient)]))
 
-vcf_somatic %>% 
+# consequence of Patient exonic mutations only seen in urine  
+urine_only = vcf_somatic %>% 
   filter(!ID %in% Patient_1_plasma & ID %in% Patient_1_urine, 
          Patient == "Patient_1", Tissue == "U") %>% 
   select(ID, Gene.refGene, ExonicFunc.refGene) %>% 
-  distinct() %>% 
+  distinct() 
+
+urine_only %>% 
   count(ExonicFunc.refGene)
 
-vcf_somatic %>% 
+# consequence of Patient exonic mutations only seen in plasma   
+plasma_only = vcf_somatic %>% 
   filter(ID %in% Patient_1_plasma & !ID %in% Patient_1_urine, 
          Patient == "Patient_1", Tissue == "PLASMA") %>% 
   select(ID, Gene.refGene, ExonicFunc.refGene) %>% 
-  distinct() %>% 
+  distinct() 
+
+plasma_only %>% 
   count(ExonicFunc.refGene)
+
+plasma_only %>% 
+  filter(Gene.refGene %in% cancer_genes)
+
+urine_only %>% 
+  filter(Gene.refGene %in% cancer_genes)
+
+# oncoplot consistency 
+p1_oncofreq = maf_combined@data %>% 
+  as.data.frame() %>% 
+  select(where(~!all(is.na(.x)))) %>% 
+  select(Tumor_Sample_Barcode, Gene = Hugo_Symbol) %>% 
+  left_join(annot) %>% 
+  filter(Patient=="Patient_1") %>% 
+  select(Sample, Patient, Timepoint, Tissue, Gene) %>% 
+  count(Tissue, Gene) %>% 
+  filter(Tissue != "Blood", Gene %in% oncoplot_genes) %>% 
+  arrange(Gene,Tissue) %>%
+  mutate(n_samps = ifelse(Tissue=="Plasma",5,4),
+         prop = n/n_samps,
+         prop = ifelse(prop > 1, 1, prop),
+         mostmuts = NA) %>% 
+  group_by(Gene)
+
+for(mygene in unique(p1_oncofreq$Gene)){
+  myprops = p1_oncofreq$prop[p1_oncofreq$Gene == mygene]
+  if(length(myprops)==1){
+    p1_oncofreq$mostmuts[p1_oncofreq$Gene == mygene] = NA
+  }else{
+    if(myprops[1] > myprops[2]){
+      p1_oncofreq$mostmuts[p1_oncofreq$Gene == mygene] = "Plasma"
+    }
+    if(myprops[1] < myprops[2]){
+      p1_oncofreq$mostmuts[p1_oncofreq$Gene == mygene] = "Urine"
+    }
+    if(myprops[1] == myprops[2]){
+      p1_oncofreq$mostmuts[p1_oncofreq$Gene == mygene] = "Equal"
+    }
+  }
+}
+table(p1_oncofreq$mostmuts) / 2 # whether a gene in the oncoplot is seen more frequently in plasma, urine or equal
 
 
 # TMB 
@@ -1056,7 +1378,7 @@ tmb_df %>%
          perdiff = (maxval - minval) * 100 / ((minval + maxval)/ 2)
          ) %>% 
   arrange(Timepoint) %>% 
-  select(Timepoint, perdiff) %>% 
+  select(Timepoint,maxval, minval, perdiff) %>% 
   distinct()
 
 
@@ -1211,8 +1533,20 @@ if(plot_figs) png(file.path(resdir,"96_mutcat_Patient_1.png"), width = 2400,heig
 plot_sigs_edit(plotin, Title = "Patient 1")
 if(plot_figs) dev.off()
 
-compare_results(reference_sigs = SBS_cosmic,extraction_1 = t(plotin), extraction_1_name = "Patient_1",
+patient1_cos_sim = compare_results(reference_sigs = SBS_cosmic,extraction_1 = t(plotin), extraction_1_name = "Patient_1",
                 lower_threshold = 0) %>% 
-  arrange(Ref_Patient_1_cosine_score)
+  arrange(desc(Ref_Patient_1_cosine_score)) %>% 
+  mutate(sigrank = c(1:nrow(.)))
 # most similar to signature 55: https://cancer.sanger.ac.uk/signatures/sbs/sbs55/
+
+MSI_sigs = paste0("SBS",c(6, 15, 20, 21, 26))
+
+report_cosine_tab = head(patient1_cos_sim, 3) %>% 
+  rbind(filter(patient1_cos_sim, Ref_Signature %in% MSI_sigs)) %>% 
+  select(`COSMIC Signature` = Ref_Signature, `Cosine similiartity` = Ref_Patient_1_cosine_score,
+         Rank = sigrank)
+
+write_delim(report_cosine_tab, 
+            file = file.path(resdir,("Patient_1_COSMIC_cosines.txt")),
+            delim = "\t",col_names = T)
 
