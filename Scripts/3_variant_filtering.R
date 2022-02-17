@@ -213,8 +213,8 @@ for(patient in sort(unique(vcf_annotated$Patient))){
     samp_alt = gsub("_","",samp)
     mypattern = paste0(samp,"|",samp_alt)
     
-    if(mypattern == "CIRCB35a_PLASMA|CIRCB35aPLASMA") mypattern = "CIRCB35_PLASMA";samp =  "CIRCB35a_PLASMA"
-    if(mypattern == "CIRCB35b_PLASMA|CIRCB35bPLASMA") mypattern = "CIRCB35PLASMA"; samp = "CIRCB35b_PLASMA"
+    if(mypattern == "CIRCB35a_PLASMA|CIRCB35aPLASMA"){mypattern = "CIRCB35_PLASMA";samp =  "CIRCB35a_PLASMA"}
+    if(mypattern == "CIRCB35b_PLASMA|CIRCB35bPLASMA"){mypattern = "CIRCB35PLASMA"; samp = "CIRCB35b_PLASMA"}
     
     current_load = NA
     current_load = vcf_files[grepl(mypattern, vcf_files)]
@@ -230,7 +230,7 @@ for(patient in sort(unique(vcf_annotated$Patient))){
         normal_info = getINFO(current_vcf) %>%
           as.data.frame() %>% 
           rename(INFO = ".")
-        
+
         normal_df = getFIX(current_vcf) %>%
           as.data.frame() %>% 
           mutate(ID = paste(patient, CHROM, POS, substr(REF,1,1), sep = "_")) %>% 
