@@ -415,7 +415,7 @@ write_delim(gl_write,
 # max gnomAD freq not designated as "common variant" by VEP 
 maf_germline@data %>% 
   filter(!is.na(gnomAD_AF), FILTER != "common_variant") %>% 
-  max(gnomAD_AF) %>% 
+  pull(gnomAD_AF) %>% 
   max()
 
 # make df of germline muts to add to somatic MAFs as a "cnTable"
