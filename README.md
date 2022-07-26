@@ -4,7 +4,7 @@ Scripts for my MSc 60 Credit Research Project: "_Preliminary liquid biopsy analy
 
 Read my project [here](https://www.dropbox.com/s/leetk8cle13ewvg/BenedictMonteiro_18040_60_Credit_Research_Project_final.pdf?dl=0). 
 
-Contact me with issues/questions here: [benedict.monteiro@mdc-berlin.de](mailto:benedict.monteiro@mdc-berlin.de)
+My KCL email goes offline as of August 2022, you can contact me with issues/questions here: [benedict.monteiro@mdc-berlin.de](mailto:benedict.monteiro@mdc-berlin.de)
 
 <br>
 
