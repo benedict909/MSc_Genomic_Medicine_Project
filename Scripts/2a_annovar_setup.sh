@@ -34,9 +34,13 @@ cd ~/Annovar/annovar
 # Also check you are using the most recent version of COSMIC
 myauth=$(echo "k20128353@kcl.ac.uk:BLUEeagle88!" | base64)
 
+# set latest cosmic version here:
+COSMIC_latest_version=97 # as of Jan 2023
+ref_genome_version=GRCh38
+
 # download CosmicMutantExport
 exportlink=$(curl -H "Authorization: Basic $myauth" \
-  https://cancer.sanger.ac.uk/cosmic/file_download/GRCh37/cosmic/v94/CosmicMutantExport.tsv.gz)
+  https://cancer.sanger.ac.uk/cosmic/file_download/${ref_genome_version}/cosmic/v${COSMIC_latest_version}/CosmicMutantExport.tsv.gz)
 
 exportlink=$(echo $exportlink | sed 's/{"url"://g')
 exportlink=$(echo $exportlink | sed 's/}//g')
@@ -46,7 +50,7 @@ curl $exportlink --output CosmicMutantExport.tsv.gz
 
 # download CosmicCodingMuts.vcf.gz
 codinglink=$(curl -H "Authorization: Basic $myauth" \
-  https://cancer.sanger.ac.uk/cosmic/file_download/GRCh37/cosmic/v94/VCF/CosmicCodingMuts.vcf.gz)
+  https://cancer.sanger.ac.uk/cosmic/file_download/${ref_genome_version}/cosmic/v${COSMIC_latest_version}/VCF/CosmicCodingMuts.vcf.gz)
 
 codinglink=$(echo $codinglink | sed 's/{"url"://g')
 codinglink=$(echo $codinglink | sed 's/}//g')
@@ -58,9 +62,9 @@ gunzip *.gz
 # create the database from the files downloaded from COSMIC
 wget http://www.openbioinformatics.org/annovar/download/prepare_annovar_user.pl
 chmod 775 prepare_annovar_user.pl
-perl prepare_annovar_user.pl -dbtype cosmic CosmicMutantExport.tsv -vcf CosmicCodingMuts.vcf > hg19_cosmic94_coding.txt
+perl prepare_annovar_user.pl -dbtype cosmic CosmicMutantExport.tsv -vcf CosmicCodingMuts.vcf > ${ref_genome_version}_cosmic${COSMIC_latest_version}_coding.txt
 
-mv hg19_cosmic94* ./humandb
+mv ${ref_genome_version}_cosmic${COSMIC_latest_version}* ./humandb
 
 rm CosmicMutantExport.tsv # remove to save disk space
 rm CosmicCodingMuts.vcf
